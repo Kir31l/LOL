@@ -12,7 +12,6 @@ public class PlayerMove : MonoBehaviour
     [SerializeField] private float checkRadius = 0.2f;
 
     [Header("Wall Slide")]
-    [SerializeField] private float wallCheckDistance = 0.5f;
     [SerializeField] private float wallSlideSpeed = 2f;
     [SerializeField] private float wallJumpForceX = 10f;
     [SerializeField] private float wallJumpForceY = 10f;
@@ -128,8 +127,8 @@ public class PlayerMove : MonoBehaviour
     {
         if (isWallSliding)
         {
-            // Slow fall while sliding
-            rb.linearVelocity = new Vector2(rb.linearVelocity.x, Mathf.Max(rb.linearVelocity.y, -wallSlideSpeed));
+            // Slow fall while sliding — zero horizontal force so we stick to the wall
+            rb.linearVelocity = new Vector2(0f, Mathf.Max(rb.linearVelocity.y, -wallSlideSpeed));
         }
         else
         {
@@ -148,20 +147,23 @@ public class PlayerMove : MonoBehaviour
         Vector2 center = capsule.bounds.center;
         Vector2 extents = capsule.bounds.extents;
 
-        // Cast from mid-height on each side
-        Vector2 originLeft = center + Vector2.left * extents.x;
-        Vector2 originRight = center + Vector2.right * extents.x;
-        Vector2 castDir = Vector2.left;
+        // Tiny circle at collider edge — uses defaultContactOffset so detection
+        // fires at the exact moment the physics engine registers wall contact.
+        // This is ~0.16 pixels — invisible.
+        float skin = Physics2D.defaultContactOffset;
 
-        RaycastHit2D leftHit = Physics2D.Raycast(originLeft, Vector2.left, wallCheckDistance, groundLayer);
-        RaycastHit2D rightHit = Physics2D.Raycast(originRight, Vector2.right, wallCheckDistance, groundLayer);
+        Vector2 leftOrigin = center + Vector2.left * (extents.x + skin);
+        Vector2 rightOrigin = center + Vector2.right * (extents.x + skin);
 
-        if (leftHit.collider != null)
+        Collider2D leftHit = Physics2D.OverlapCircle(leftOrigin, skin, groundLayer);
+        Collider2D rightHit = Physics2D.OverlapCircle(rightOrigin, skin, groundLayer);
+
+        if (leftHit != null)
         {
             isTouchingWall = true;
             wallDirection = -1;
         }
-        else if (rightHit.collider != null)
+        else if (rightHit != null)
         {
             isTouchingWall = true;
             wallDirection = 1;
@@ -193,11 +195,10 @@ public class PlayerMove : MonoBehaviour
         Gizmos.color = Color.red;
         Gizmos.DrawWireSphere(bottom, checkRadius);
 
-        // Wall check rays
+        // Wall check — tiny circles at the collider edges
         Gizmos.color = Color.cyan;
-        Vector2 leftOrigin = center + Vector2.left * extents.x;
-        Vector2 rightOrigin = center + Vector2.right * extents.x;
-        Gizmos.DrawRay(leftOrigin, Vector2.left * wallCheckDistance);
-        Gizmos.DrawRay(rightOrigin, Vector2.right * wallCheckDistance);
+        float skin = Physics2D.defaultContactOffset;
+        Gizmos.DrawWireSphere(center + Vector2.left * (extents.x + skin), skin);
+        Gizmos.DrawWireSphere(center + Vector2.right * (extents.x + skin), skin);
     }
 }
