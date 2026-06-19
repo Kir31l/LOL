@@ -16,6 +16,12 @@ public class PlayerMove : MonoBehaviour
     [SerializeField] private float wallJumpForceX = 10f;
     [SerializeField] private float wallJumpForceY = 10f;
 
+    [Header("Damage")]
+    [SerializeField] private float invulnerabilityDuration = 1.5f;
+
+    /// <summary>True while the player cannot take damage.</summary>
+    public bool IsInvulnerable { get; private set; }
+
     private LayerMask groundLayer;
 
     private Rigidbody2D rb;
@@ -30,15 +36,19 @@ public class PlayerMove : MonoBehaviour
     private bool isWallSliding;
     private bool isTouchingWall;
     private int wallDirection; // -1 left, 1 right
+    private float invulnerabilityTimer;
+    private float knockbackTimer;
     private static readonly int StateParam = Animator.StringToHash("state");
 
     // Animator state values — must match the controller
     private const int StateIdle = 0;
     private const int StateRun = 1;
+    private const int StateHit = 2;
     private const int StateJump = 3;
     private const int StateDoubleJump = 4;
     private const int StateFall = 5;
     private const int StateWallSlide = 6;
+    private const int StateDisappear = 7;
 
     void Start()
     {
@@ -46,10 +56,43 @@ public class PlayerMove : MonoBehaviour
         capsule = GetComponent<CapsuleCollider2D>();
         anim = GetComponent<Animator>();
         groundLayer = LayerMask.GetMask(groundLayerName);
+
+        LivesManager.OnLivesChanged += OnLivesChanged;
+    }
+
+    void OnDestroy()
+    {
+        LivesManager.OnLivesChanged -= OnLivesChanged;
+    }
+
+    private void OnLivesChanged(int lives)
+    {
+        if (lives <= 0)
+        {
+            // Zero lives — play disappear animation and disable movement
+            if (anim != null && anim.runtimeAnimatorController != null)
+                anim.SetInteger(StateParam, StateDisappear);
+            enabled = false;
+        }
+        else if (!enabled && lives > 0)
+        {
+            // Respawn — re-enable movement
+            enabled = true;
+            IsInvulnerable = true;
+            invulnerabilityTimer = invulnerabilityDuration;
+        }
     }
 
     void Update()
     {
+        // Invulnerability countdown
+        if (IsInvulnerable)
+        {
+            invulnerabilityTimer -= Time.deltaTime;
+            if (invulnerabilityTimer <= 0f)
+                IsInvulnerable = false;
+        }
+
         moveInput = Input.GetAxisRaw("Horizontal");
 
         isGrounded = IsGrounded();
@@ -120,11 +163,19 @@ public class PlayerMove : MonoBehaviour
             newState = rb.linearVelocity.y > 0 ? StateJump : StateFall;
         }
 
-        anim.SetInteger(StateParam, newState);
+        if (anim.runtimeAnimatorController != null)
+            anim.SetInteger(StateParam, newState);
     }
 
     void FixedUpdate()
     {
+        // Let knockback play out before player regains control
+        if (knockbackTimer > 0f)
+        {
+            knockbackTimer -= Time.fixedDeltaTime;
+            return;
+        }
+
         if (isWallSliding)
         {
             // Slow fall while sliding — zero horizontal force so we stick to the wall
@@ -134,6 +185,24 @@ public class PlayerMove : MonoBehaviour
         {
             rb.linearVelocity = new Vector2(moveInput * speed, rb.linearVelocity.y);
         }
+    }
+
+    /// <summary>Called by hazards when the player takes damage.</summary>
+    /// <summary>Take a hit. Optionally override the invulnerability duration (0 = use default).</summary>
+    public void TakeHit(Vector2 knockbackVelocity, float overrideInvulnDuration = 0f)
+    {
+        if (IsInvulnerable) return;
+
+        IsInvulnerable = true;
+        invulnerabilityTimer = overrideInvulnDuration > 0f ? overrideInvulnDuration : invulnerabilityDuration;
+
+        // Apply knockback burst and freeze input briefly so it plays out
+        rb.linearVelocity = knockbackVelocity;
+        knockbackTimer = 0.15f;
+
+        // Play hit animation
+        if (anim != null && anim.runtimeAnimatorController != null)
+            anim.SetInteger(StateParam, StateHit);
     }
 
     private bool IsGrounded()

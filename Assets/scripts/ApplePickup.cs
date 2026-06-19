@@ -1,6 +1,12 @@
+using Unity.Netcode;
 using UnityEngine;
 
-public class ApplePickup : MonoBehaviour
+/// <summary>
+/// Server-authoritative apple pickup. The server detects the trigger,
+/// awards points to the hitting player's NetworkPlayer, and syncs
+/// the apple's hidden/visible state to all clients.
+/// </summary>
+public class ApplePickup : NetworkBehaviour
 {
     [Header("Score")]
     [SerializeField] private int points = 50;
@@ -10,6 +16,11 @@ public class ApplePickup : MonoBehaviour
 
     [Header("Animator")]
     [SerializeField] private string takenBool = "Taken";
+
+    /// <summary>Synced apple state — the server decides when it's available.</summary>
+    private NetworkVariable<bool> isAvailable = new(true,
+        NetworkVariableReadPermission.Everyone,
+        NetworkVariableWritePermission.Server);
 
     private Collider2D appleCollider;
     private SpriteRenderer spriteRenderer;
@@ -22,60 +33,60 @@ public class ApplePickup : MonoBehaviour
         animator = GetComponent<Animator>();
     }
 
-    private void OnTriggerEnter2D(Collider2D other)
+    public override void OnNetworkSpawn()
     {
-        // Make sure it's the player
-        if (other.GetComponent<PlayerMove>() == null)
-            return;
-
-        Collect();
+        isAvailable.OnValueChanged += OnAvailabilityChanged;
+        // Sync initial visual state
+        ApplyAvailability(isAvailable.Value);
     }
 
-    private void Collect()
+    public override void OnNetworkDespawn()
     {
-        // Disable collision so it can't be re-collected
-        appleCollider.enabled = false;
+        isAvailable.OnValueChanged -= OnAvailabilityChanged;
+    }
 
-        // Play the "taken" animation
-        if (animator != null)
-            animator.SetBool(takenBool, true);
+    private void OnTriggerEnter2D(Collider2D other)
+    {
+        if (!IsServer) return;
+        if (!isAvailable.Value) return;
+
+        var netPlayer = other.GetComponent<NetworkPlayer>();
+        if (netPlayer == null) return;
 
         // Award points
-        ScoreManager.AddPoints(points);
+        netPlayer.AddScoreServerRpc(points);
 
-        // Start respawn timer
+        // Mark as taken and start respawn
+        isAvailable.Value = false;
+        appleCollider.enabled = false;
+
         StartCoroutine(RespawnRoutine());
     }
 
     private System.Collections.IEnumerator RespawnRoutine()
     {
-        // Wait for the "taken" animation to play, then hide
-        if (animator != null)
-        {
-            // Get the current animation state length (if available)
-            AnimatorStateInfo state = animator.GetCurrentAnimatorStateInfo(0);
-            float animLength = state.length > 0 ? state.length : 0.3f;
-            yield return new WaitForSeconds(animLength);
-        }
-        else
-        {
-            yield return new WaitForSeconds(0.3f);
-        }
-
-        // Hide the apple visually
-        if (spriteRenderer != null)
-            spriteRenderer.enabled = false;
-
-        // Wait the remaining respawn time
         yield return new WaitForSeconds(respawnTime);
 
-        // Reset animator to default state (reverts scale, color, etc.)
+        isAvailable.Value = true;
+        appleCollider.enabled = true;
+    }
+
+    private void OnAvailabilityChanged(bool _, bool newValue)
+    {
+        ApplyAvailability(newValue);
+    }
+
+    private void ApplyAvailability(bool available)
+    {
         if (animator != null)
-            animator.Rebind();
+        {
+            if (available)
+                animator.Rebind();
+            else
+                animator.SetBool(takenBool, true);
+        }
 
         if (spriteRenderer != null)
-            spriteRenderer.enabled = true;
-
-        appleCollider.enabled = true;
+            spriteRenderer.enabled = available;
     }
 }

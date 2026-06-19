@@ -1,22 +1,20 @@
-# Multiplayer Conversion
+# Multiplayer Conversion — Current State
 
-## Scripts Ready
-- `NetworkPlayer.cs` — NetworkBehaviour, owner-gated movement, NetworkVariable<int> character sync
-- `ConnectionManager.cs` — DontDestroyOnLoad, Create/Join/Disconnect, loads lobby via NetworkSceneManager
+## Scripts Written (ready to go)
+- `NetworkPlayer.cs` — NetworkBehaviour, owner-gates movement, syncs character index via NetworkVariable
+- `ConnectionManager.cs` — DontDestroyOnLoad, handles Create/Join/Disconnect, loads lobby via NetworkSceneManager
 - `CameraFollower.cs` — simple LateUpdate follow on Main Camera
-- `LoadSceneOnClick.cs` — Mode enum (LoadScene/StartHost/StartClient)
-- `LobbyPlayerSetup.cs` — ApplyCharacter() for NetworkPlayer + single-player fallback
+- `LoadSceneOnClick.cs` — Mode enum: LoadScene / StartHost / StartClient
+- `LobbyPlayerSetup.cs` — ApplyCharacter() for NetworkPlayer, plus single-player fallback
 
-## Setup Method
-Created `Assets/Editor/NetworkSceneSetup.cs` — Unity Editor tool.
-Open menu: **Tools → Network → Setup All Scenes**
+## Manifest
+- `com.unity.netcode.gameobjects` 2.11.2 already in manifest
+- `com.unity.transport` auto-resolves as dependency
 
-### What the tool does:
-1. **Menu scene**: Creates NetworkManager GO with NetworkManager + UnityTransport + ConnectionManager. Wires CREATE button → StartHost. Wires JOIN button → StartClient. Both auto-save username.
-2. **Lobby scene**: Adds NetworkObject, NetworkTransform, NetworkRigidbody2D, NetworkPlayer to the existing player. Creates `Assets/Prefabs/NetworkPlayer.prefab`. Removes old player. Creates NetworkManager + assigns Player Prefab. Adds 4 NetworkStartPositions.
-
-### To test:
-1. Open Unity, let packages resolve
-2. Tools → Network → Setup All Scenes
-3. Open menu.unity, press Play → click CREATE (hosts + loads lobby)
-4. Build standalone exe → run → click JOIN (connects to editor host)
+## Pending Editor Work
+1. **Menu scene**: Create NetworkManager GO with NetworkManager + UnityTransport components
+2. **Prefab**: Create NetworkPlayer prefab from lobby player setup
+3. **NetworkManager**: Assign Player Prefab slot
+4. **Menu**: Wire Create/Join buttons (LoadSceneOnClick mode → StartHost/StartClient)
+5. **Lobby**: Remove static player, add NetworkStartPositions
+6. Test: host + client connection, character sync, movement

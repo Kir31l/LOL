@@ -7,6 +7,14 @@ public static class LivesManager
 
     public static event System.Action<int> OnLivesChanged;
 
+    /// <summary>Set lives directly (used by NetworkPlayer sync).</summary>
+    public static void SetLives(int value)
+    {
+        if (Lives == value) return;
+        Lives = Mathf.Clamp(value, 0, MaxLives);
+        OnLivesChanged?.Invoke(Lives);
+    }
+
     /// <summary>Removes one life. Returns true if at zero.</summary>
     public static bool RemoveLife()
     {

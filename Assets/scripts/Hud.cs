@@ -4,6 +4,7 @@ public class Hud : MonoBehaviour
 {
     [Header("References")]
     [SerializeField] private BitmapText scoreText;
+    [SerializeField] private BitmapText codeText;
     [SerializeField] private Vector2 padding = new Vector2(0.5f, 0.5f);
 
     private static Hud instance;
@@ -23,6 +24,7 @@ public class Hud : MonoBehaviour
     {
         ScoreManager.OnScoreChanged += UpdateScore;
         UpdateScore(ScoreManager.Score);
+        UpdateCode();
     }
 
     private void OnDisable()
@@ -49,6 +51,14 @@ public class Hud : MonoBehaviour
         if (scoreText != null)
         {
             scoreText.SetText($"SCORE {score:D4}");
+        }
+    }
+
+    private void UpdateCode()
+    {
+        if (codeText != null && !string.IsNullOrEmpty(ConnectionManager.LobbyCode))
+        {
+            codeText.SetText($"{ConnectionManager.LobbyCode}");
         }
     }
 }
