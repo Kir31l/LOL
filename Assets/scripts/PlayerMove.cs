@@ -1,10 +1,18 @@
 using Fusion;
 using UnityEngine;
 
-public class PlayerMove : MonoBehaviour
+/// <summary>
+/// Handles player movement, jumping, wall sliding, knockback, and animation.
+/// 
+/// KEY FIX for multiplayer sync:
+/// - Uses Fusion's FixedUpdateNetwork() instead of Unity's Update()/FixedUpdate()
+/// - Reads input from GetInput<NetworkInputData>() instead of Input.GetAxisRaw()
+/// - Fusion distributes input to all peers — the SERVER simulates all players' physics
+///   and NetworkTransform syncs the results to every client.
+/// - Clients predict their local player with the same input and get corrected if needed.
+/// </summary>
+public class PlayerMove : NetworkBehaviour
 {
-    private NetworkObject netObj;
-
     [Header("Movement")]
     [SerializeField] private float speed = 5f;
     [SerializeField] private float jumpForce = 10f;
@@ -26,11 +34,9 @@ public class PlayerMove : MonoBehaviour
     public bool IsInvulnerable { get; private set; }
 
     private LayerMask groundLayer;
-
     private Rigidbody2D rb;
     private CapsuleCollider2D capsule;
     private Animator anim;
-    private float moveInput;
     private bool facingRight = true;
     private bool isGrounded;
     private bool wasGrounded;
@@ -41,9 +47,11 @@ public class PlayerMove : MonoBehaviour
     private int wallDirection; // -1 left, 1 right
     private float invulnerabilityTimer;
     private float knockbackTimer;
-    private static readonly int StateParam = Animator.StringToHash("state");
 
-    // Animator state values — must match the controller
+    /// <summary>Previous tick's buttons for manual edge detection (Fusion 2.0.12 doesn't have IsDown).</summary>
+    private NetworkButtons previousButtons;
+
+    private static readonly int StateParam = Animator.StringToHash("state");
     private const int StateIdle = 0;
     private const int StateRun = 1;
     private const int StateHit = 2;
@@ -53,56 +61,60 @@ public class PlayerMove : MonoBehaviour
     private const int StateWallSlide = 6;
     private const int StateDisappear = 7;
 
-    void Start()
+    // ─── Fusion lifecycle ────────────────────────────────────
+
+    public override void Spawned()
     {
-        netObj = GetComponent<NetworkObject>();
         rb = GetComponent<Rigidbody2D>();
         capsule = GetComponent<CapsuleCollider2D>();
         anim = GetComponent<Animator>();
         groundLayer = LayerMask.GetMask(groundLayerName);
 
-        LivesManager.OnLivesChanged += OnLivesChanged;
+        // Disable Rigidbody2D interpolation — NetworkTransform handles all smoothing.
+        // Both active together = double interpolation = visual lag.
+        if (rb != null)
+            rb.interpolation = RigidbodyInterpolation2D.None;
+
     }
 
-    void OnDestroy()
-    {
-        LivesManager.OnLivesChanged -= OnLivesChanged;
-    }
+    // ─── Fusion simulation tick (runs on ALL peers) ──────────
 
-    private void OnLivesChanged(int lives)
+    public override void FixedUpdateNetwork()
     {
-        if (lives <= 0)
+        // Poll NetworkPlayer.CurrentLives directly instead of global LivesManager.
+        // This ensures each player's death/respawn is INDEPENDENT from others.
+        var netPlayer = GetComponent<NetworkPlayer>();
+        if (netPlayer != null)
         {
-            // Zero lives — play disappear animation and disable movement
-            if (anim != null && anim.runtimeAnimatorController != null)
-                anim.SetInteger(StateParam, StateDisappear);
-            enabled = false;
+            if (netPlayer.CurrentLives <= 0 && enabled)
+            {
+                if (anim != null && anim.runtimeAnimatorController != null)
+                    anim.SetInteger(StateParam, StateDisappear);
+                enabled = false;
+            }
+            else if (netPlayer.CurrentLives > 0 && !enabled)
+            {
+                enabled = true;
+                IsInvulnerable = true;
+                invulnerabilityTimer = invulnerabilityDuration;
+            }
         }
-        else if (!enabled && lives > 0)
-        {
-            // Respawn — re-enable movement
-            enabled = true;
-            IsInvulnerable = true;
-            invulnerabilityTimer = invulnerabilityDuration;
-        }
-    }
 
-    void Update()
-    {
-        // Only the player who INPUT-OWNS this object can control it.
-        if (netObj != null && !netObj.HasInputAuthority)
+        // GetInput returns the correct input for THIS player on every peer.
+        // On the client: the input they just sent via OnInput.
+        // On the server: the input queue from all connected clients.
+        if (!GetInput<NetworkInputData>(out var input))
             return;
 
-        // Invulnerability countdown
+        // ─── Timers ────────────────────────────────────────
         if (IsInvulnerable)
         {
-            invulnerabilityTimer -= Time.deltaTime;
+            invulnerabilityTimer -= Runner.DeltaTime;
             if (invulnerabilityTimer <= 0f)
                 IsInvulnerable = false;
         }
 
-        moveInput = Input.GetAxisRaw("Horizontal");
-
+        // ─── Physics state checks ──────────────────────────
         isGrounded = IsGrounded();
         CheckWall();
 
@@ -115,99 +127,83 @@ public class PlayerMove : MonoBehaviour
         }
         wasGrounded = isGrounded;
 
+        // Manual edge detection for jump (Fusion 2.0.12 removed IsDown)
+        bool jumpPressed = input.Buttons.IsSet(MyButtons.Jump) && !previousButtons.IsSet(MyButtons.Jump);
+        previousButtons = input.Buttons;
+
         // Wall slide — only in air, pressing toward a wall
         isWallSliding = isTouchingWall && !isGrounded
-                        && Mathf.Sign(moveInput) == wallDirection;
+                        && Mathf.Sign(input.HorizontalDirection) == wallDirection;
 
-        // Wall jump
-        if (Input.GetButtonDown("Jump") && isWallSliding)
+        // ─── Jump ──────────────────────────────────────────
+        if (jumpPressed && isWallSliding)
         {
+            // Wall jump
             rb.linearVelocity = new Vector2(-wallDirection * wallJumpForceX, wallJumpForceY);
             isWallSliding = false;
-            jumpCount = 0;      // reset so you can air-jump after wall jump
+            jumpCount = 0;
             doubleJumped = false;
-            // Flip to face away from wall
             if (wallDirection == 1 && facingRight) Flip();
             else if (wallDirection == -1 && !facingRight) Flip();
         }
-        // Regular jump (ground or air)
-        else if (Input.GetButtonDown("Jump") && jumpCount < maxJumps)
+        else if (jumpPressed && jumpCount < maxJumps)
         {
+            // Ground jump or air (double) jump
             rb.linearVelocity = new Vector2(rb.linearVelocity.x, jumpForce);
             jumpCount++;
             doubleJumped = jumpCount >= 2;
             isWallSliding = false;
         }
 
-        // Flip sprite (only when not wall sliding)
+        // ─── Sprite flip ───────────────────────────────────
         if (!isWallSliding)
         {
-            if (moveInput > 0 && !facingRight) Flip();
-            else if (moveInput < 0 && facingRight) Flip();
+            if (input.HorizontalDirection > 0 && !facingRight) Flip();
+            else if (input.HorizontalDirection < 0 && facingRight) Flip();
         }
 
-        // Animator state
-        UpdateAnimation();
-    }
-
-    private void UpdateAnimation()
-    {
-        int newState;
-
-        if (isWallSliding)
-        {
-            newState = StateWallSlide;
-        }
-        else if (isGrounded)
-        {
-            newState = Mathf.Abs(moveInput) > 0.1f ? StateRun : StateIdle;
-        }
-        else if (doubleJumped)
-        {
-            newState = StateDoubleJump;
-        }
-        else
-        {
-            newState = rb.linearVelocity.y > 0 ? StateJump : StateFall;
-        }
-
-        if (anim.runtimeAnimatorController != null)
-            anim.SetInteger(StateParam, newState);
-    }
-
-    void FixedUpdate()
-    {
-        // Only the input-owning player controls movement physics
-        if (netObj != null && !netObj.HasInputAuthority)
-            return;
-
-        // Defensive — restore gravity if something (NetworkTransform, Fusion) zeroed it
-        if (rb != null && rb.gravityScale < 0.01f)
-        {
-            rb.gravityScale = 1f;
-            rb.bodyType = RigidbodyType2D.Dynamic;
-        }
-
-        // Let knockback play out before player regains control
+        // ─── Apply velocity ────────────────────────────────
         if (knockbackTimer > 0f)
         {
-            knockbackTimer -= Time.fixedDeltaTime;
-            return;
+            knockbackTimer -= Runner.DeltaTime;
+            // Let knockback play out — don't override velocity
         }
-
-        if (isWallSliding)
+        else if (isWallSliding)
         {
-            // Slow fall while sliding — zero horizontal force so we stick to the wall
             rb.linearVelocity = new Vector2(0f, Mathf.Max(rb.linearVelocity.y, -wallSlideSpeed));
         }
         else
         {
-            rb.linearVelocity = new Vector2(moveInput * speed, rb.linearVelocity.y);
+            rb.linearVelocity = new Vector2(input.HorizontalDirection * speed, rb.linearVelocity.y);
         }
+
+        // ─── Animation state ───────────────────────────────
+        UpdateAnimation();
     }
 
-    /// <summary>Called by hazards when the player takes damage.</summary>
-    /// <summary>Take a hit. Optionally override the invulnerability duration (0 = use default).</summary>
+    // ─── Animation ───────────────────────────────────────────
+
+    private void UpdateAnimation()
+    {
+        if (anim == null || anim.runtimeAnimatorController == null) return;
+
+        int newState;
+
+        if (isWallSliding)
+            newState = StateWallSlide;
+        else if (isGrounded)
+            newState = Mathf.Abs(rb.linearVelocity.x) > 0.1f ? StateRun : StateIdle;
+        else if (doubleJumped)
+            newState = StateDoubleJump;
+        else
+            newState = rb.linearVelocity.y > 0 ? StateJump : StateFall;
+
+        anim.SetInteger(StateParam, newState);
+    }
+
+    // ─── External call (via RPC from NetworkPlayer) ──────────
+
+    /// <summary>Apply knockback and start invulnerability. Called locally via RPC on the affected client.</summary>
     public void TakeHit(Vector2 knockbackVelocity, float overrideInvulnDuration = 0f)
     {
         if (IsInvulnerable) return;
@@ -215,29 +211,27 @@ public class PlayerMove : MonoBehaviour
         IsInvulnerable = true;
         invulnerabilityTimer = overrideInvulnDuration > 0f ? overrideInvulnDuration : invulnerabilityDuration;
 
-        // Apply knockback burst and freeze input briefly so it plays out
         rb.linearVelocity = knockbackVelocity;
         knockbackTimer = 0.15f;
 
-        // Play hit animation
         if (anim != null && anim.runtimeAnimatorController != null)
             anim.SetInteger(StateParam, StateHit);
     }
 
+    // ─── Physics helpers ─────────────────────────────────────
+
     private bool IsGrounded()
     {
+        if (capsule == null) return false;
         Vector2 bottom = capsule.bounds.center + Vector3.down * capsule.bounds.extents.y;
         return Physics2D.OverlapCircle(bottom, checkRadius, groundLayer);
     }
 
     private void CheckWall()
     {
+        if (capsule == null) return;
         Vector2 center = capsule.bounds.center;
         Vector2 extents = capsule.bounds.extents;
-
-        // Tiny circle at collider edge — uses defaultContactOffset so detection
-        // fires at the exact moment the physics engine registers wall contact.
-        // This is ~0.16 pixels — invisible.
         float skin = Physics2D.defaultContactOffset;
 
         Vector2 leftOrigin = center + Vector2.left * (extents.x + skin);
@@ -246,21 +240,9 @@ public class PlayerMove : MonoBehaviour
         Collider2D leftHit = Physics2D.OverlapCircle(leftOrigin, skin, groundLayer);
         Collider2D rightHit = Physics2D.OverlapCircle(rightOrigin, skin, groundLayer);
 
-        if (leftHit != null)
-        {
-            isTouchingWall = true;
-            wallDirection = -1;
-        }
-        else if (rightHit != null)
-        {
-            isTouchingWall = true;
-            wallDirection = 1;
-        }
-        else
-        {
-            isTouchingWall = false;
-            wallDirection = 0;
-        }
+        if (leftHit != null) { isTouchingWall = true; wallDirection = -1; }
+        else if (rightHit != null) { isTouchingWall = true; wallDirection = 1; }
+        else { isTouchingWall = false; wallDirection = 0; }
     }
 
     private void Flip()
@@ -274,16 +256,14 @@ public class PlayerMove : MonoBehaviour
     void OnDrawGizmosSelected()
     {
         if (capsule == null) capsule = GetComponent<CapsuleCollider2D>();
-
+        if (capsule == null) return;
         Vector2 center = capsule.bounds.center;
         Vector2 extents = capsule.bounds.extents;
 
-        // Ground check
         Vector2 bottom = center + Vector2.down * extents.y;
         Gizmos.color = Color.red;
         Gizmos.DrawWireSphere(bottom, checkRadius);
 
-        // Wall check — tiny circles at the collider edges
         Gizmos.color = Color.cyan;
         float skin = Physics2D.defaultContactOffset;
         Gizmos.DrawWireSphere(center + Vector2.left * (extents.x + skin), skin);

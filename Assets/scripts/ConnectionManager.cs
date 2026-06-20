@@ -250,9 +250,30 @@ public class ConnectionManager : MonoBehaviour, INetworkRunnerCallbacks
     public void OnPlayerLeft(NetworkRunner runner, PlayerRef player)
     {
         Debug.Log($"[ConnectionManager] Player left: {player.PlayerId}");
+        if (!runner.IsServer) return;
+
+        // Despawn the player's NetworkObject so it doesn't linger in the scene
+        foreach (var netPlayer in FindObjectsByType<NetworkPlayer>(FindObjectsSortMode.None))
+        {
+            if (netPlayer.Object != null && netPlayer.Object.InputAuthority == player)
+            {
+                Debug.Log($"[ConnectionManager] Despawning player object for {player.PlayerId}");
+                runner.Despawn(netPlayer.Object);
+                break;
+            }
+        }
     }
 
-    public void OnInput(NetworkRunner runner, NetworkInput input) { }
+    public void OnInput(NetworkRunner runner, NetworkInput input)
+    {
+        // Pack the local player's real input into the struct so Fusion sends it to the server.
+        // Use GetButton() (continuous isDown) NOT GetButtonDown() because OnInput fires at
+        // tick rate (64Hz) — GetButtonDown's single-frame edge can be missed between ticks.
+        var data = new NetworkInputData();
+        data.HorizontalDirection = Input.GetAxisRaw("Horizontal");
+        data.Buttons.Set(MyButtons.Jump, Input.GetButton("Jump"));
+        input.Set(data);
+    }
     public void OnInputMissing(NetworkRunner runner, PlayerRef player, NetworkInput input) { }
 
     public void OnShutdown(NetworkRunner runner, ShutdownReason shutdownReason)

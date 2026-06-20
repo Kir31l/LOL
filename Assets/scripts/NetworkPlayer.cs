@@ -29,12 +29,7 @@ public class NetworkPlayer : NetworkBehaviour
 
     public override void Spawned()
     {
-        // Some Fusion configurations (or NetworkTransform) can set Rigidbody2D
-        // to kinematic or zero gravityScale — force correct physics state.
-        EnforceRigidbodyState();
-
         // Only the input owner (local player) applies their own character here.
-        // The server (host) does NOT apply its character to other players' objects.
         if (Object.HasInputAuthority)
         {
             ApplyCharacterState(PlayerSession.SelectedCharacter, PlayerSession.Username);
@@ -46,43 +41,23 @@ public class NetworkPlayer : NetworkBehaviour
 
         lastScore = Score;
         lastLives = CurrentLives;
-
-        StartCoroutine(DelayedDiagnostic());
-    }
-
-    private void EnforceRigidbodyState()
-    {
-        var rb = GetComponent<Rigidbody2D>();
-        if (rb == null) return;
-        bool changed = false;
-        if (rb.bodyType != RigidbodyType2D.Dynamic)
-        {
-            rb.bodyType = RigidbodyType2D.Dynamic;
-            changed = true;
-        }
-        if (rb.gravityScale < 0.01f)
-        {
-            rb.gravityScale = 1f;
-            changed = true;
-        }
-        if (changed)
-            Debug.LogWarning($"[NetworkPlayer] Fixed Rigidbody2D: bodyType={rb.bodyType} gravity={rb.gravityScale}");
     }
 
     public override void Render()
     {
-        // Ensure Rigidbody2D state stays correct (some Fusion processing may override)
-        EnforceRigidbodyState();
 
-        // Poll for changes (Fusion doesn't have per-property callbacks like Netcode's NetworkVariable)
+        // Poll for changes (Fusion doesn't have per-property callbacks)
+        // Only update the local static managers for the local player's values.
         if (Score != lastScore)
         {
-            ScoreManager.AddPoints(Score - lastScore);
+            if (Object.HasInputAuthority)
+                ScoreManager.AddPoints(Score - lastScore);
             lastScore = Score;
         }
         if (CurrentLives != lastLives)
         {
-            LivesManager.SetLives(CurrentLives);
+            if (Object.HasInputAuthority)
+                LivesManager.SetLives(CurrentLives);
             lastLives = CurrentLives;
         }
 
@@ -94,18 +69,6 @@ public class NetworkPlayer : NetworkBehaviour
             lastCharacterIndex = CharacterIndex;
             lastUsername = name;
         }
-    }
-
-    private System.Collections.IEnumerator DelayedDiagnostic()
-    {
-        yield return new WaitForSeconds(0.5f);
-        var rb = GetComponent<Rigidbody2D>();
-        var col = GetComponent<Collider2D>();
-        Debug.Log($"[NetworkPlayer] DIAGNOSTIC 0.5s after spawn:");
-        Debug.Log($"  Rigidbody2D: {(rb != null ? $"bodyType={rb.bodyType} gravityScale={rb.gravityScale}" : "NULL")}");
-        Debug.Log($"  Collider2D:  {(col != null ? $"enabled={col.enabled} isTrigger={col.isTrigger} layer={gameObject.layer}" : "NULL")}");
-        Debug.Log($"  Position: {transform.position}");
-        Debug.Log($"  HasStateAuthority={Object.HasStateAuthority} HasInputAuthority={Object.HasInputAuthority}");
     }
 
     // ─── Character visuals ───────────────────────────────────
