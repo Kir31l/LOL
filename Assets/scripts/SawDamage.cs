@@ -1,4 +1,4 @@
-using Unity.Netcode;
+using Fusion;
 using UnityEngine;
 
 /// <summary>
@@ -13,11 +13,11 @@ public class SawDamage : NetworkBehaviour
 
     private void OnTriggerEnter2D(Collider2D other)
     {
-        if (!IsServer) return;
+        if (Object == null || !Object.HasStateAuthority) return;
         if (!other.CompareTag("Player")) return;
 
         var netPlayer = other.GetComponent<NetworkPlayer>();
-        if (netPlayer == null || netPlayer.IsInvulnerable.Value) return;
+        if (netPlayer == null || netPlayer.IsInvulnerable) return;
 
         // Knockback direction: away from saw, always some upward
         Vector2 dir = (other.transform.position - transform.position).normalized;

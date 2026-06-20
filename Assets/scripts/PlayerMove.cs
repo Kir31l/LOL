@@ -1,7 +1,10 @@
+using Fusion;
 using UnityEngine;
 
 public class PlayerMove : MonoBehaviour
 {
+    private NetworkObject netObj;
+
     [Header("Movement")]
     [SerializeField] private float speed = 5f;
     [SerializeField] private float jumpForce = 10f;
@@ -52,6 +55,7 @@ public class PlayerMove : MonoBehaviour
 
     void Start()
     {
+        netObj = GetComponent<NetworkObject>();
         rb = GetComponent<Rigidbody2D>();
         capsule = GetComponent<CapsuleCollider2D>();
         anim = GetComponent<Animator>();
@@ -85,6 +89,10 @@ public class PlayerMove : MonoBehaviour
 
     void Update()
     {
+        // Only the player who INPUT-OWNS this object can control it.
+        if (netObj != null && !netObj.HasInputAuthority)
+            return;
+
         // Invulnerability countdown
         if (IsInvulnerable)
         {
@@ -169,6 +177,17 @@ public class PlayerMove : MonoBehaviour
 
     void FixedUpdate()
     {
+        // Only the input-owning player controls movement physics
+        if (netObj != null && !netObj.HasInputAuthority)
+            return;
+
+        // Defensive — restore gravity if something (NetworkTransform, Fusion) zeroed it
+        if (rb != null && rb.gravityScale < 0.01f)
+        {
+            rb.gravityScale = 1f;
+            rb.bodyType = RigidbodyType2D.Dynamic;
+        }
+
         // Let knockback play out before player regains control
         if (knockbackTimer > 0f)
         {

@@ -1,10 +1,10 @@
-using Unity.Netcode;
+using Fusion;
 using UnityEngine;
 
 /// <summary>
 /// Oscillates the saw left and right in a smooth loop.
-/// Server-authoritative: only the server moves the saw,
-/// NetworkTransform syncs the position to all clients.
+/// Server-authoritative: only the server moves the saw.
+/// If used outside a network session (Play mode without Create/Join), move locally for testing.
 /// </summary>
 public class SawMovement : NetworkBehaviour
 {
@@ -15,22 +15,18 @@ public class SawMovement : NetworkBehaviour
     private Vector2 startPos;
     private float timer;
 
-    void Start()
+    public override void Spawned()
     {
         startPos = transform.position;
         timer = -startDelay;
     }
 
-    void Update()
+    public override void FixedUpdateNetwork()
     {
-        // If network is active, only the server moves the saw (synced via NetworkTransform)
-        // If no network session (Play mode without Create/Join), move locally for testing
-        if (NetworkManager.Singleton != null && NetworkManager.Singleton.IsListening)
-        {
-            if (!IsServer) return;
-        }
+        // Only the state authority (server/host) moves the saw
+        if (!Object.HasStateAuthority) return;
 
-        timer += Time.deltaTime;
+        timer += Runner.DeltaTime;
         if (timer < 0f) return;
 
         float offset = Mathf.Sin(timer * moveSpeed) * moveRange;

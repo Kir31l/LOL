@@ -1,4 +1,4 @@
-using Unity.Netcode;
+using Fusion;
 using UnityEngine;
 
 /// <summary>
@@ -18,13 +18,12 @@ public class ApplePickup : NetworkBehaviour
     [SerializeField] private string takenBool = "Taken";
 
     /// <summary>Synced apple state — the server decides when it's available.</summary>
-    private NetworkVariable<bool> isAvailable = new(true,
-        NetworkVariableReadPermission.Everyone,
-        NetworkVariableWritePermission.Server);
+    [Networked] public NetworkBool IsAvailable { get; set; }
 
     private Collider2D appleCollider;
     private SpriteRenderer spriteRenderer;
     private Animator animator;
+    private NetworkBool lastAvailable;
 
     private void Awake()
     {
@@ -33,22 +32,21 @@ public class ApplePickup : NetworkBehaviour
         animator = GetComponent<Animator>();
     }
 
-    public override void OnNetworkSpawn()
+    public override void Spawned()
     {
-        isAvailable.OnValueChanged += OnAvailabilityChanged;
-        // Sync initial visual state
-        ApplyAvailability(isAvailable.Value);
-    }
+        // By default apples are available when the game starts
+        if (Object.HasStateAuthority)
+            IsAvailable = true;
 
-    public override void OnNetworkDespawn()
-    {
-        isAvailable.OnValueChanged -= OnAvailabilityChanged;
+        // Sync initial visual state
+        ApplyAvailability(IsAvailable);
+        lastAvailable = IsAvailable;
     }
 
     private void OnTriggerEnter2D(Collider2D other)
     {
-        if (!IsServer) return;
-        if (!isAvailable.Value) return;
+        if (Object == null || !Object.HasStateAuthority) return;
+        if (!IsAvailable) return;
 
         var netPlayer = other.GetComponent<NetworkPlayer>();
         if (netPlayer == null) return;
@@ -57,7 +55,7 @@ public class ApplePickup : NetworkBehaviour
         netPlayer.AddScoreServerRpc(points);
 
         // Mark as taken and start respawn
-        isAvailable.Value = false;
+        IsAvailable = false;
         appleCollider.enabled = false;
 
         StartCoroutine(RespawnRoutine());
@@ -67,13 +65,23 @@ public class ApplePickup : NetworkBehaviour
     {
         yield return new WaitForSeconds(respawnTime);
 
-        isAvailable.Value = true;
+        IsAvailable = true;
         appleCollider.enabled = true;
     }
 
-    private void OnAvailabilityChanged(bool _, bool newValue)
+    public override void Render()
     {
-        ApplyAvailability(newValue);
+        // Only apply when state changes (avoids spamming Animator every frame)
+        if (IsAvailable != lastAvailable)
+        {
+            ApplyAvailability(IsAvailable);
+            lastAvailable = IsAvailable;
+
+            // When apple is taken, start a brief timer so the disappear animation
+            // has time to play before we hide the sprite
+            if (!IsAvailable && gameObject.activeInHierarchy)
+                StartCoroutine(HideAfterTakenAnimation());
+        }
     }
 
     private void ApplyAvailability(bool available)
@@ -81,12 +89,21 @@ public class ApplePickup : NetworkBehaviour
         if (animator != null)
         {
             if (available)
-                animator.Rebind();
+                animator.Rebind();    // force back to idle animation immediately
             else
                 animator.SetBool(takenBool, true);
         }
 
-        if (spriteRenderer != null)
-            spriteRenderer.enabled = available;
+        // On respawn: immediately show the sprite again
+        if (spriteRenderer != null && available)
+            spriteRenderer.enabled = true;
+    }
+
+    /// <summary>Let the disappear animation play, then hide the sprite.</summary>
+    private System.Collections.IEnumerator HideAfterTakenAnimation()
+    {
+        yield return new WaitForSeconds(0.4f); // enough for the "taken" animation to play
+        if (spriteRenderer != null && !IsAvailable)
+            spriteRenderer.enabled = false;
     }
 }

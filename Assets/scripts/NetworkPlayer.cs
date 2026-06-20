@@ -1,14 +1,10 @@
+using Fusion;
 using Unity.Cinemachine;
-using Unity.Collections;
-using Unity.Netcode;
 using UnityEngine;
 
 /// <summary>
-/// Manages multiplayer-specific lifecycle for the player:
-/// - Gates movement to owner only
-/// - Syncs character selection and stats via NetworkVariables
-/// - Sets up camera to follow local player
-/// - Handles respawn
+/// Manages multiplayer-specific lifecycle for the player.
+/// Uses Fusion [Networked] properties for synced state and [Rpc] for remote calls.
 /// </summary>
 public class NetworkPlayer : NetworkBehaviour
 {
@@ -16,95 +12,103 @@ public class NetworkPlayer : NetworkBehaviour
     [SerializeField] private PlayerMove playerMove;
     [SerializeField] private LobbyPlayerSetup lobbySetup;
 
-    // --- Synced state ---
-    public NetworkVariable<int> CharacterIndex = new(0,
-        NetworkVariableReadPermission.Everyone,
-        NetworkVariableWritePermission.Server);
+    // ─── Synced state ────────────────────────────────────────
 
-    public NetworkVariable<int> Score = new(0,
-        NetworkVariableReadPermission.Everyone,
-        NetworkVariableWritePermission.Server);
-
-    public NetworkVariable<int> Deaths = new(0,
-        NetworkVariableReadPermission.Everyone,
-        NetworkVariableWritePermission.Server);
-
-    public NetworkVariable<int> CurrentLives = new(3,
-        NetworkVariableReadPermission.Everyone,
-        NetworkVariableWritePermission.Server);
-
-    public NetworkVariable<FixedString32Bytes> UsernameNV = new("PLAYER",
-        NetworkVariableReadPermission.Everyone,
-        NetworkVariableWritePermission.Server);
-
-    public NetworkVariable<bool> IsInvulnerable = new(false,
-        NetworkVariableReadPermission.Everyone,
-        NetworkVariableWritePermission.Server);
+    [Networked] public int CharacterIndex { get; set; }
+    [Networked] public int Score { get; set; }
+    [Networked] public int Deaths { get; set; }
+    [Networked] public int CurrentLives { get; set; }
+    [Networked] public NetworkString<_32> UsernameNV { get; set; }
+    [Networked] public NetworkBool IsInvulnerable { get; set; }
 
     private Coroutine respawnCoroutine;
+    private int lastScore;
+    private int lastLives;
+    private int lastCharacterIndex = -1;
+    private string lastUsername = "";
 
-    public override void OnNetworkSpawn()
+    public override void Spawned()
     {
-        bool localOwner = IsOwner;
+        // Some Fusion configurations (or NetworkTransform) can set Rigidbody2D
+        // to kinematic or zero gravityScale — force correct physics state.
+        EnforceRigidbodyState();
 
-        if (!localOwner && playerMove != null)
-            playerMove.enabled = false;
-
-        // Host uses the scene NetworkPlayer — claim ownership and set up locally
-        if (IsServer && IsClient && !localOwner)
-        {
-            NetworkObject.ChangeOwnership(NetworkManager.Singleton.LocalClientId);
-            if (playerMove != null)
-                playerMove.enabled = true;
-            ApplyCharacterState(PlayerSession.SelectedCharacter, PlayerSession.Username);
-            SetupCamera();
-            SetInitialStateServerRpc(PlayerSession.SelectedCharacter, PlayerSession.Username);
-            Score.OnValueChanged += OnScoreChanged;
-        }
-        else if (localOwner)
+        // Only the input owner (local player) applies their own character here.
+        // The server (host) does NOT apply its character to other players' objects.
+        if (Object.HasInputAuthority)
         {
             ApplyCharacterState(PlayerSession.SelectedCharacter, PlayerSession.Username);
             SetupCamera();
-            SetInitialStateServerRpc(PlayerSession.SelectedCharacter, PlayerSession.Username);
-            Score.OnValueChanged += OnScoreChanged;
+
+            // Tell state authority (server) to store the synced character state
+            SetInitialStateRpc(PlayerSession.SelectedCharacter, PlayerSession.Username);
         }
 
-        CharacterIndex.OnValueChanged += OnCharacterChanged;
-        CurrentLives.OnValueChanged += OnCurrentLivesChanged;
-        // UsernameNV may arrive after CharacterIndex on non-owner clients
-        UsernameNV.OnValueChanged += OnUsernameChanged;
+        lastScore = Score;
+        lastLives = CurrentLives;
+
+        StartCoroutine(DelayedDiagnostic());
     }
 
-    public override void OnNetworkDespawn()
+    private void EnforceRigidbodyState()
     {
-        CharacterIndex.OnValueChanged -= OnCharacterChanged;
-        CurrentLives.OnValueChanged -= OnCurrentLivesChanged;
-        UsernameNV.OnValueChanged -= OnUsernameChanged;
-        if (IsOwner)
-            Score.OnValueChanged -= OnScoreChanged;
+        var rb = GetComponent<Rigidbody2D>();
+        if (rb == null) return;
+        bool changed = false;
+        if (rb.bodyType != RigidbodyType2D.Dynamic)
+        {
+            rb.bodyType = RigidbodyType2D.Dynamic;
+            changed = true;
+        }
+        if (rb.gravityScale < 0.01f)
+        {
+            rb.gravityScale = 1f;
+            changed = true;
+        }
+        if (changed)
+            Debug.LogWarning($"[NetworkPlayer] Fixed Rigidbody2D: bodyType={rb.bodyType} gravity={rb.gravityScale}");
     }
 
-    private void OnCharacterChanged(int oldValue, int newValue)
+    public override void Render()
     {
-        // Apply with whatever username we have (may be default "PLAYER" if not synced yet)
-        ApplyCharacterState(newValue, UsernameNV.Value.ToString());
+        // Ensure Rigidbody2D state stays correct (some Fusion processing may override)
+        EnforceRigidbodyState();
+
+        // Poll for changes (Fusion doesn't have per-property callbacks like Netcode's NetworkVariable)
+        if (Score != lastScore)
+        {
+            ScoreManager.AddPoints(Score - lastScore);
+            lastScore = Score;
+        }
+        if (CurrentLives != lastLives)
+        {
+            LivesManager.SetLives(CurrentLives);
+            lastLives = CurrentLives;
+        }
+
+        // Apply character/username when the synced values arrive from the server
+        string name = UsernameNV.ToString();
+        if (CharacterIndex != lastCharacterIndex || name != lastUsername)
+        {
+            ApplyCharacterState(CharacterIndex, name);
+            lastCharacterIndex = CharacterIndex;
+            lastUsername = name;
+        }
     }
 
-    private void OnUsernameChanged(FixedString32Bytes oldValue, FixedString32Bytes newValue)
+    private System.Collections.IEnumerator DelayedDiagnostic()
     {
-        // Username arrived — make sure character visuals use the real name
-        ApplyCharacterState(CharacterIndex.Value, newValue.ToString());
+        yield return new WaitForSeconds(0.5f);
+        var rb = GetComponent<Rigidbody2D>();
+        var col = GetComponent<Collider2D>();
+        Debug.Log($"[NetworkPlayer] DIAGNOSTIC 0.5s after spawn:");
+        Debug.Log($"  Rigidbody2D: {(rb != null ? $"bodyType={rb.bodyType} gravityScale={rb.gravityScale}" : "NULL")}");
+        Debug.Log($"  Collider2D:  {(col != null ? $"enabled={col.enabled} isTrigger={col.isTrigger} layer={gameObject.layer}" : "NULL")}");
+        Debug.Log($"  Position: {transform.position}");
+        Debug.Log($"  HasStateAuthority={Object.HasStateAuthority} HasInputAuthority={Object.HasInputAuthority}");
     }
 
-    private void OnScoreChanged(int oldValue, int newValue)
-    {
-        ScoreManager.AddPoints(newValue - oldValue);
-    }
-
-    private void OnCurrentLivesChanged(int oldValue, int newValue)
-    {
-        LivesManager.SetLives(newValue);
-    }
+    // ─── Character visuals ───────────────────────────────────
 
     private void ApplyCharacterState(int characterIndex, string username)
     {
@@ -119,59 +123,60 @@ public class NetworkPlayer : NetworkBehaviour
             vcam.Follow = transform;
     }
 
-    // ─── Server RPCs ────────────────────────────────────────
+    // ─── Server RPCs ─────────────────────────────────────────
 
-    [Rpc(SendTo.Server)]
-    private void SetInitialStateServerRpc(int characterIndex, string username)
+    [Rpc(RpcSources.All, RpcTargets.StateAuthority)]
+    private void SetInitialStateRpc(int characterIndex, string username)
     {
-        UsernameNV.Value = new FixedString32Bytes(username);
-        CharacterIndex.Value = characterIndex;
+        UsernameNV = username;
+        CharacterIndex = characterIndex;
+        CurrentLives = 3;
     }
 
-    [Rpc(SendTo.Server)]
+    [Rpc(RpcSources.All, RpcTargets.StateAuthority)]
     public void AddScoreServerRpc(int amount)
     {
-        if (!IsServer) return;
-        Score.Value += amount;
+        if (!Object.HasStateAuthority) return;
+        Score += amount;
     }
 
-    [Rpc(SendTo.Server)]
+    [Rpc(RpcSources.All, RpcTargets.StateAuthority)]
     public void ReportHitServerRpc(Vector2 knockbackVelocity)
     {
-        if (!IsServer) return;
-        if (IsInvulnerable.Value) return;
+        if (!Object.HasStateAuthority) return;
+        if (IsInvulnerable) return;
 
-        Deaths.Value++;
-        CurrentLives.Value--;
-        IsInvulnerable.Value = true;
+        Deaths++;
+        CurrentLives--;
+        IsInvulnerable = true;
 
-        // Visual knockback on the owner client
+        // Apply knockback on the owner client
         ApplyKnockbackClientRpc(knockbackVelocity);
         StartCoroutine(InvulnerabilityTimer());
 
-        if (CurrentLives.Value <= 0)
+        if (CurrentLives <= 0)
         {
             if (respawnCoroutine != null) StopCoroutine(respawnCoroutine);
             respawnCoroutine = StartCoroutine(RespawnRoutine());
         }
     }
 
-    // ─── Client RPCs ────────────────────────────────────────
+    // ─── Client RPCs ─────────────────────────────────────────
 
-    [Rpc(SendTo.ClientsAndHost)]
+    [Rpc(RpcSources.StateAuthority, RpcTargets.All)]
     private void ApplyKnockbackClientRpc(Vector2 knockbackVelocity)
     {
-        if (IsOwner && playerMove != null)
+        if (Object.HasInputAuthority && playerMove != null)
             playerMove.TakeHit(knockbackVelocity);
     }
 
-    // ─── Server helpers ─────────────────────────────────────
+    // ─── Server helpers ──────────────────────────────────────
 
     private System.Collections.IEnumerator InvulnerabilityTimer()
     {
         yield return new WaitForSeconds(1.5f);
-        if (IsServer)
-            IsInvulnerable.Value = false;
+        if (Object.HasStateAuthority)
+            IsInvulnerable = false;
     }
 
     private System.Collections.IEnumerator RespawnRoutine()
@@ -185,21 +190,20 @@ public class NetworkPlayer : NetworkBehaviour
         transform.position = Vector3.zero;
 
         // Reset lives and re-enable
-        CurrentLives.Value = 3;
-        IsInvulnerable.Value = false;
+        CurrentLives = 3;
+        IsInvulnerable = false;
         SetPlayerStateClientRpc(true);
     }
 
-    [Rpc(SendTo.ClientsAndHost)]
+    [Rpc(RpcSources.StateAuthority, RpcTargets.All)]
     private void SetPlayerStateClientRpc(bool alive)
     {
-        if (IsOwner)
+        if (Object.HasInputAuthority)
         {
             if (playerMove != null)
                 playerMove.enabled = alive;
         }
 
-        // Visually disable/enable
         var sr = GetComponent<SpriteRenderer>();
         if (sr != null) sr.enabled = alive;
         var col = GetComponent<Collider2D>();

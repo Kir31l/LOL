@@ -1,129 +1,116 @@
-using System.Collections.Generic;
-using Unity.Netcode;
-using Unity.Netcode.Transports.UTP;
-using Unity.Services.Core;
-using Unity.Services.Authentication;
-using Unity.Services.Relay;
-using Unity.Services.Lobbies;
-using Unity.Services.Lobbies.Models;
+using Fusion;
+using Fusion.Sockets;
 using UnityEngine;
 using UnityEngine.SceneManagement;
 
 /// <summary>
-/// Handles create / join / disconnect flow via Unity Relay + Lobby.
+/// Handles create / join / disconnect flow via Photon Fusion.
 /// Attach to a persistent GameObject that survives between scenes.
 /// </summary>
-public class ConnectionManager : MonoBehaviour
+public class ConnectionManager : MonoBehaviour, INetworkRunnerCallbacks
 {
     [Header("Scene")]
-    [SerializeField] private string lobbySceneName = "lobby";
+    [SerializeField] private string lobbySceneName = "lobby"; // used in OnSceneLoadDone to verify correct scene loaded
 
-    [Header("Relay")]
+    [Header("Player (prefab with NetworkObject + NetworkPlayer)")]
+    [SerializeField] private GameObject playerPrefab;
+
+    [Header("Fusion")]
     [SerializeField] private int maxPlayers = 4;
-    [SerializeField] private string connectionType = "dtls";
 
     [Header("Feedback (optional)")]
     [SerializeField] private BitmapText statusText;
 
-    /// <summary>4-digit numeric lobby code displayed to players.</summary>
+    /// <summary>The active Fusion runner (null when disconnected).</summary>
+    public static NetworkRunner Runner { get; private set; }
+
+    /// <summary>4-digit room code displayed to players.</summary>
     public static string LobbyCode { get; private set; } = "";
 
     private bool isConnecting;
-    private Lobby currentLobby;
+    private bool gameStarted;
+    private System.Collections.Generic.List<PlayerRef> pendingSpawns = new();
 
     private void Awake()
     {
         DontDestroyOnLoad(gameObject);
     }
 
-    /// <summary>Create a new game (host = server + local client) via Relay and Lobby.</summary>
+    private void Start()
+    {
+        // Auto-find a status text if none assigned
+        if (statusText == null)
+        {
+            var allTexts = FindObjectsByType<BitmapText>(FindObjectsSortMode.None);
+            foreach (var t in allTexts)
+            {
+                if (t.gameObject.name.Contains("CODE") || t.gameObject.name.Contains("Status"))
+                {
+                    statusText = t;
+                    break;
+                }
+            }
+            if (statusText == null && allTexts.Length > 0)
+                statusText = allTexts[0];
+        }
+    }
+
+    // ─── Host ────────────────────────────────────────────────
+
+    /// <summary>Create a new game as the host (server + local client).</summary>
     public async void CreateGame()
     {
-        if (isConnecting)
-        {
-            SetStatus("Already connecting, please wait...");
-            return;
-        }
+        if (isConnecting) { SetStatus("Already connecting, please wait..."); return; }
         isConnecting = true;
-
         SetStatus("Initializing...");
-
-        if (NetworkManager.Singleton == null)
-        {
-            SetStatus("ERROR: NetworkManager.Singleton is null.\nAdd a NetworkManager GameObject to the menu scene.");
-            isConnecting = false;
-            return;
-        }
-
-        var transport = NetworkManager.Singleton.GetComponent<UnityTransport>();
-        if (transport == null)
-        {
-            SetStatus("ERROR: No UnityTransport on NetworkManager.\nAdd a UnityTransport component.");
-            isConnecting = false;
-            return;
-        }
 
         try
         {
-            // 1. Authenticate with Unity Services
-            SetStatus("Connecting to Unity Services...");
-            await UnityServices.InitializeAsync();
+            // 1. Generate a 4-digit room code
+            string code = Random.Range(1000, 10000).ToString();
 
-            SetStatus("Signing in anonymously...");
-            if (!AuthenticationService.Instance.IsSignedIn)
-                await AuthenticationService.Instance.SignInAnonymouslyAsync();
+            // 2. Create a new NetworkRunner
+            var go = new GameObject("Fusion Runner");
+            DontDestroyOnLoad(go);
+            var runner = go.AddComponent<NetworkRunner>();
+            go.AddComponent<NetworkSceneManagerDefault>();
+            go.AddComponent<NetworkObjectProviderDefault>();
 
-            // 2. Generate a unique 4-digit lobby code
-            string code4Digit = await GenerateUniqueCode();
+            // 3. Add callbacks and provide input flag
+            runner.AddCallbacks(this);
 
-            // 3. Create Relay allocation + get join code
-            SetStatus("Allocating Relay server...");
-            var allocation = await RelayService.Instance.CreateAllocationAsync(maxPlayers - 1);
-            string relayJoinCode = await RelayService.Instance.GetJoinCodeAsync(allocation.AllocationId);
-            Debug.Log($"Relay join code: {relayJoinCode}");
-
-            // 4. Create Unity Lobby with the 4-digit code as the lobby name
-            //    Store the Relay join code in publicly visible lobby data so clients can read it.
-            SetStatus("Creating lobby...");
-            currentLobby = await LobbyService.Instance.CreateLobbyAsync(
-                code4Digit,
-                maxPlayers,
-                new CreateLobbyOptions
-                {
-                    IsPrivate = false,
-                    Data = new Dictionary<string, DataObject>
-                    {
-                        { "RelayCode", new DataObject(DataObject.VisibilityOptions.Public, relayJoinCode) }
-                    },
-                    Player = new Player(
-                        id: AuthenticationService.Instance.PlayerId,
-                        allocationId: allocation.AllocationId.ToString()
-                    )
-                }
-            );
-            LobbyCode = code4Digit;
-            Debug.Log($"Created lobby '{currentLobby.Name}' (ID: {currentLobby.Id}, code: {LobbyCode})");
-
-            // 5. Configure Unity Transport with Relay host data
-            SetStatus("Configuring transport...");
-            bool isSecure = connectionType == "dtls";
-            transport.SetHostRelayData(
-                allocation.RelayServer.IpV4,
-                (ushort)allocation.RelayServer.Port,
-                allocation.AllocationIdBytes,
-                allocation.Key,
-                allocation.ConnectionData,
-                isSecure);
-
-            // 6. Start the host
+            // 4. Start as host
             SetStatus("Starting host...");
-            NetworkManager.Singleton.OnServerStarted += OnServerStarted;
-            NetworkManager.Singleton.StartHost();
+            var args = new StartGameArgs
+            {
+                GameMode = GameMode.Host,
+                SessionName = code,
+                PlayerCount = maxPlayers,
+                SceneManager = runner.GetComponent<INetworkSceneManager>(),
+                ObjectProvider = runner.GetComponent<INetworkObjectProvider>(),
+            };
+
+            var result = await runner.StartGame(args);
+
+            if (!result.Ok)
+                throw new System.Exception($"Failed to start game: {result.ShutdownReason}");
+
+            // 5. Store references
+            Runner = runner;
+            LobbyCode = code;
+            SetStatus($"YOUR CODE: {code}");
+
+            Debug.Log($"[ConnectionManager] Host started, code: {code}. Loading lobby scene...");
+
+            // 6. Load lobby scene (clients will sync automatically)
+            await runner.LoadScene(SceneRef.FromIndex(1), LoadSceneMode.Single);
+            Debug.Log($"[ConnectionManager] Lobby scene loaded successfully");
         }
         catch (System.Exception e)
         {
             SetStatus($"ERROR: {e.Message}");
-            Debug.LogError($"Failed to create game: {e}");
+            Debug.LogError($"[ConnectionManager] Create game failed: {e}");
+            Cleanup();
         }
         finally
         {
@@ -131,146 +118,203 @@ public class ConnectionManager : MonoBehaviour
         }
     }
 
-    /// <summary>Join an existing game via a 4-digit lobby code.</summary>
-    public async void JoinGame(string code4Digit)
+    // ─── Client ──────────────────────────────────────────────
+
+    /// <summary>Join an existing game via a 4-digit room code.</summary>
+    public async void JoinGame(string code)
     {
-        if (isConnecting)
-        {
-            SetStatus("Already connecting, please wait...");
-            return;
-        }
+        if (isConnecting) { SetStatus("Already connecting, please wait..."); return; }
         isConnecting = true;
-
         SetStatus("Initializing...");
-
-        if (NetworkManager.Singleton == null)
-        {
-            SetStatus("ERROR: NetworkManager.Singleton is null.");
-            isConnecting = false;
-            return;
-        }
-
-        var transport = NetworkManager.Singleton.GetComponent<UnityTransport>();
-        if (transport == null)
-        {
-            SetStatus("ERROR: No UnityTransport on NetworkManager.");
-            isConnecting = false;
-            return;
-        }
 
         try
         {
-            // 1. Authenticate with Unity Services
-            SetStatus("Connecting to Unity Services...");
-            await UnityServices.InitializeAsync();
+            // 1. Create a new NetworkRunner
+            var go = new GameObject("Fusion Runner");
+            DontDestroyOnLoad(go);
+            var runner = go.AddComponent<NetworkRunner>();
+            go.AddComponent<NetworkSceneManagerDefault>();
+            go.AddComponent<NetworkObjectProviderDefault>();
 
-            SetStatus("Signing in anonymously...");
-            if (!AuthenticationService.Instance.IsSignedIn)
-                await AuthenticationService.Instance.SignInAnonymouslyAsync();
+            // 2. Add callbacks
+            runner.AddCallbacks(this);
 
-            // 2. Find the lobby by its name (the 4-digit code)
-            SetStatus($"Finding lobby {code4Digit}...");
-            var qr = await LobbyService.Instance.QueryLobbiesAsync(new QueryLobbiesOptions
+            // 3. Start as client
+            SetStatus($"Connecting to {code}...");
+            Debug.Log($"[ConnectionManager] Client starting GameMode.Client, session='{code}'");
+            var args = new StartGameArgs
             {
-                Filters = new List<QueryFilter>
-                {
-                    new QueryFilter(QueryFilter.FieldOptions.Name, code4Digit, QueryFilter.OpOptions.EQ)
-                }
-            });
+                GameMode = GameMode.Client,
+                SessionName = code,
+                SceneManager = runner.GetComponent<INetworkSceneManager>(),
+                ObjectProvider = runner.GetComponent<INetworkObjectProvider>(),
+            };
 
-            if (qr.Results.Count == 0)
-                throw new System.Exception($"No lobby found with code {code4Digit}");
+            var result = await runner.StartGame(args);
 
-            currentLobby = qr.Results[0];
+            Debug.Log($"[ConnectionManager] StartGame result: Ok={result.Ok} ShutdownReason={result.ShutdownReason}");
 
-            // 3. Read the Relay join code from the lobby's public data
-            if (!currentLobby.Data.TryGetValue("RelayCode", out var relayData) || string.IsNullOrEmpty(relayData.Value))
-                throw new System.Exception("Lobby has no Relay code");
+            if (!result.Ok)
+                throw new System.Exception($"Failed to join game: {result.ShutdownReason}");
 
-            string relayJoinCode = relayData.Value;
-
-            // 4. Join Relay allocation
-            SetStatus("Joining Relay allocation...");
-            var joinAllocation = await RelayService.Instance.JoinAllocationAsync(relayJoinCode);
-
-            // 5. Configure Unity Transport with Relay client data
-            SetStatus("Configuring transport...");
-            bool isSecure = connectionType == "dtls";
-            transport.SetClientRelayData(
-                joinAllocation.RelayServer.IpV4,
-                (ushort)joinAllocation.RelayServer.Port,
-                joinAllocation.AllocationIdBytes,
-                joinAllocation.Key,
-                joinAllocation.ConnectionData,
-                joinAllocation.HostConnectionData,
-                isSecure);
-
-            // 6. Start the client
-            SetStatus("Starting client...");
-            NetworkManager.Singleton.StartClient();
+            // 4. Store reference
+            Runner = runner;
+            Debug.Log($"[ConnectionManager] Client connected to session: {code}");
         }
         catch (System.Exception e)
         {
             SetStatus($"ERROR: {e.Message}");
-            Debug.LogError($"Failed to join game: {e}");
+            Debug.LogError($"[ConnectionManager] Join game failed: {e}");
+            Cleanup();
         }
         finally
         {
             isConnecting = false;
         }
     }
+
+    // ─── Disconnect ──────────────────────────────────────────
 
     /// <summary>Disconnect and return to the menu scene.</summary>
     public void Disconnect()
     {
-        // Clean up lobby if we created/joined one
-        if (currentLobby != null)
-        {
-            try
-            {
-                if (NetworkManager.Singleton != null && NetworkManager.Singleton.IsHost)
-                    LobbyService.Instance.DeleteLobbyAsync(currentLobby.Id);
-            }
-            catch { /* best-effort cleanup */ }
-            currentLobby = null;
-        }
-
-        LobbyCode = "";
-
-        if (NetworkManager.Singleton != null)
-            NetworkManager.Singleton.Shutdown();
-
+        Cleanup();
         SceneManager.LoadScene("menu");
     }
 
-    private void OnServerStarted()
+    private void Cleanup()
     {
-        NetworkManager.Singleton.OnServerStarted -= OnServerStarted;
-        NetworkManager.Singleton.SceneManager.LoadScene(lobbySceneName, LoadSceneMode.Single);
+        if (Runner != null)
+        {
+            Runner.Shutdown();
+            if (Runner != null && Runner.gameObject != null)
+                Destroy(Runner.gameObject);
+            Runner = null;
+        }
+        LobbyCode = "";
+        isConnecting = false;
+        gameStarted = false;
+        pendingSpawns.Clear();
     }
 
-    /// <summary>Generate a random 1000-9999 code not used by any existing lobby.</summary>
-    private async System.Threading.Tasks.Task<string> GenerateUniqueCode()
+    // ─── INetworkRunnerCallbacks ─────────────────────────────
+
+    public void OnPlayerJoined(NetworkRunner runner, PlayerRef player)
     {
-        for (int attempt = 0; attempt < 10; attempt++)
+        Debug.Log($"[ConnectionManager] OnPlayerJoined — player={player.PlayerId} IsServer={runner.IsServer} gameStarted={gameStarted}");
+
+        if (!runner.IsServer) return;
+
+        // If the lobby scene hasn't loaded yet (host starting up), defer the spawn
+        // so the player is created in the correct scene with physics/colliders.
+        if (!gameStarted)
         {
-            string code = Random.Range(1000, 10000).ToString();
-
-            var qr = await LobbyService.Instance.QueryLobbiesAsync(new QueryLobbiesOptions
-            {
-                Filters = new List<QueryFilter>
-                {
-                    new QueryFilter(QueryFilter.FieldOptions.Name, code, QueryFilter.OpOptions.EQ)
-                }
-            });
-
-            if (qr.Results.Count == 0)
-                return code;
+            Debug.Log($"[ConnectionManager] Deferring spawn for player {player.PlayerId} until scene loads");
+            pendingSpawns.Add(player);
+            return;
         }
 
-        // Fallback: very unlikely to reach here
-        return Random.Range(1000, 10000).ToString();
+        SpawnPlayer(runner, player);
     }
+
+    private void SpawnPlayer(NetworkRunner runner, PlayerRef player)
+    {
+        if (playerPrefab == null)
+        {
+            Debug.LogError("[ConnectionManager] playerPrefab not assigned!");
+            return;
+        }
+
+        var prefabNO = playerPrefab.GetComponent<NetworkObject>();
+        if (prefabNO == null)
+        {
+            Debug.LogError($"[ConnectionManager] Prefab '{playerPrefab.name}' has no NetworkObject!");
+            return;
+        }
+
+        // Spawn at a safe position away from obstacles
+        // Lobby scene floor is typically around y=-3 to -4, so y=0 puts player above ground.
+        // Will fall onto the floor via gravity.
+        Vector3 spawnPos = new Vector3(0f, 2f, 0f);
+        var spawned = runner.Spawn(prefabNO, spawnPos, Quaternion.identity, player);
+        if (spawned == null)
+        {
+            Debug.LogError("[ConnectionManager] runner.Spawn returned null!");
+            return;
+        }
+
+        var netPlayer = spawned.GetComponent<NetworkPlayer>();
+        Debug.Log($"[ConnectionManager] Spawned player: obj={spawned.name} scene={spawned.gameObject.scene.name} hasNetworkPlayer={(netPlayer != null)}");
+    }
+
+    public void OnPlayerLeft(NetworkRunner runner, PlayerRef player)
+    {
+        Debug.Log($"[ConnectionManager] Player left: {player.PlayerId}");
+    }
+
+    public void OnInput(NetworkRunner runner, NetworkInput input) { }
+    public void OnInputMissing(NetworkRunner runner, PlayerRef player, NetworkInput input) { }
+
+    public void OnShutdown(NetworkRunner runner, ShutdownReason shutdownReason)
+    {
+        Debug.Log($"[ConnectionManager] Runner shutdown: {shutdownReason}");
+        if (runner == Runner)
+            Runner = null;
+    }
+
+    public void OnConnectedToServer(NetworkRunner runner)
+    {
+        Debug.Log($"[ConnectionManager] Connected to server");
+    }
+
+    public void OnDisconnectedFromServer(NetworkRunner runner, NetDisconnectReason reason)
+    {
+        Debug.Log($"[ConnectionManager] Disconnected from server: {reason}");
+        Cleanup();
+    }
+
+    public void OnConnectRequest(NetworkRunner runner, NetworkRunnerCallbackArgs.ConnectRequest request, byte[] token)
+    {
+        request.Accept();
+    }
+
+    public void OnConnectFailed(NetworkRunner runner, NetAddress remoteAddress, NetConnectFailedReason reason)
+    {
+        Debug.LogError($"[ConnectionManager] Connect failed: {reason}");
+    }
+
+    public void OnUserSimulationMessage(NetworkRunner runner, SimulationMessagePtr message) { }
+    public void OnSessionListUpdated(NetworkRunner runner, System.Collections.Generic.List<SessionInfo> sessionList) { }
+    public void OnCustomAuthenticationResponse(NetworkRunner runner, System.Collections.Generic.Dictionary<string, object> data) { }
+    public void OnHostMigration(NetworkRunner runner, HostMigrationToken hostMigrationToken) { }
+
+    public void OnObjectEnterAOI(NetworkRunner runner, NetworkObject obj, PlayerRef player) { }
+    public void OnObjectExitAOI(NetworkRunner runner, NetworkObject obj, PlayerRef player) { }
+
+    public void OnReliableDataReceived(NetworkRunner runner, PlayerRef player, ReliableKey key, System.ArraySegment<byte> data) { }
+    public void OnReliableDataProgress(NetworkRunner runner, PlayerRef player, ReliableKey key, float progress) { }
+    public void OnSceneLoadDone(NetworkRunner runner)
+    {
+        Debug.Log($"[ConnectionManager] Scene '{lobbySceneName}' load done: {SceneManager.GetActiveScene().name}");
+
+        // Mark game as started — lobby is now the active scene with physics
+        gameStarted = true;
+
+        // Spawn all players that were deferred during startup
+        if (runner.IsServer && pendingSpawns.Count > 0)
+        {
+            Debug.Log($"[ConnectionManager] Spawning {pendingSpawns.Count} deferred player(s)");
+            foreach (var player in pendingSpawns)
+                SpawnPlayer(runner, player);
+            pendingSpawns.Clear();
+        }
+    }
+    public void OnSceneLoadStart(NetworkRunner runner)
+    {
+        Debug.Log($"[ConnectionManager] Scene load starting...");
+    }
+
+    // ─── Helpers ─────────────────────────────────────────────
 
     private void SetStatus(string msg)
     {

@@ -133,6 +133,7 @@ GameObject:
   - component: {fileID: 1887813157055413093}
   - component: {fileID: 789723746142480703}
   - component: {fileID: 6932471598235167894}
+  - component: {fileID: 8289786365401656461}
   m_Layer: 0
   m_Name: NetworkPlayer
   m_TagString: Player
@@ -149,7 +150,7 @@ Transform:
   m_GameObject: {fileID: 3509522211285713741}
   serializedVersion: 2
   m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
-  m_LocalPosition: {x: -6.12, y: -1.17, z: 0}
+  m_LocalPosition: {x: -6.84, y: -0.78, z: 0}
   m_LocalScale: {x: 1, y: 1, z: 1}
   m_ConstrainProportionsScale: 0
   m_Children:
@@ -168,14 +169,14 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: d5a57f767e5e46a458fc5d3c628d0cbb, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Unity.Netcode.Runtime::Unity.Netcode.NetworkObject
-  GlobalObjectIdHash: 2616021981
-  InScenePlacedSourceGlobalObjectIdHash: 0
+  GlobalObjectIdHash: 2080114757
+  InScenePlacedSourceGlobalObjectIdHash: 2080114757
   DeferredDespawnTick: 0
   Ownership: 1
   AlwaysReplicateAsRoot: 0
   SynchronizeTransform: 1
   ActiveSceneSynchronization: 1
-  SceneMigrationSynchronization: 1
+  SceneMigrationSynchronization: 0
   SpawnWithObservers: 1
   DontDestroyWithOwner: 0
   AutoObjectParentSync: 1
@@ -196,7 +197,7 @@ Rigidbody2D:
   m_Mass: 1
   m_LinearDamping: 0
   m_AngularDamping: 0.05
-  m_GravityScale: 9.81
+  m_GravityScale: 3
   m_Material: {fileID: 0}
   m_IncludeLayers:
     serializedVersion: 2
@@ -247,6 +248,7 @@ CapsuleCollider2D:
   m_Direction: 0
 --- !u!212 &2123456789
 SpriteRenderer:
+  serializedVersion: 2
   m_ObjectHideFlags: 0
   m_CorrespondingSourceObject: {fileID: 0}
   m_PrefabInstance: {fileID: 0}
@@ -260,6 +262,13 @@ SpriteRenderer:
   m_MotionVectors: 1
   m_LightProbeUsage: 1
   m_ReflectionProbeUsage: 1
+  m_RayTracingMode: 0
+  m_RayTraceProcedural: 0
+  m_RayTracingAccelStructBuildFlagsOverride: 0
+  m_RayTracingAccelStructBuildFlags: 1
+  m_SmallMeshCulling: 1
+  m_ForceMeshLod: -1
+  m_MeshLodSelectionBias: 0
   m_RenderingLayerMask: 1
   m_RendererPriority: 0
   m_Materials:
@@ -281,9 +290,11 @@ SpriteRenderer:
   m_AutoUVMaxDistance: 0.5
   m_AutoUVMaxAngle: 89
   m_LightmapParameters: {fileID: 0}
+  m_GlobalIlluminationMeshLod: 0
   m_SortingLayerID: 0
   m_SortingLayer: 0
   m_SortingOrder: 0
+  m_MaskInteraction: 0
   m_Sprite: {fileID: 0}
   m_Color: {r: 1, g: 1, b: 1, a: 1}
   m_FlipX: 0
@@ -293,7 +304,6 @@ SpriteRenderer:
   m_AdaptiveModeThreshold: 0.5
   m_SpriteTileMode: 0
   m_WasSpriteAssigned: 0
-  m_MaskInteraction: 0
   m_SpriteSortPoint: 0
 --- !u!95 &1279029867277547473
 Animator:
@@ -305,7 +315,7 @@ Animator:
   m_GameObject: {fileID: 3509522211285713741}
   m_Enabled: 1
   m_Avatar: {fileID: 0}
-  m_Controller: {fileID: 0}
+  m_Controller: {fileID: 9100000, guid: 375405988bacbd14381f0a56c9728dff, type: 2}
   m_CullingMode: 0
   m_UpdateMode: 0
   m_ApplyRootMotion: 0
@@ -334,10 +344,10 @@ MonoBehaviour:
   maxJumps: 2
   groundLayerName: Ground
   checkRadius: 0.2
-  wallCheckDistance: 0.5
   wallSlideSpeed: 2
   wallJumpForceX: 10
   wallJumpForceY: 10
+  invulnerabilityDuration: 1.5
 --- !u!114 &306342243827197955
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -434,14 +444,18 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: d4146454a130f9b47ae171ea420e043f, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::NetworkPlayer
-  ShowTopMostFoldoutHeaderGroup: 1
   playerMove: {fileID: 5068433197036381180}
   lobbySetup: {fileID: 306342243827197955}
-  CharacterIndex:
-    UpdateTraits:
-      MinSecondsBetweenUpdates: 0
-      MaxSecondsBetweenUpdates: 0
-    m_InternalValue: 0
+  _CharacterIndex: 0
+  _Score: 0
+  _Deaths: 0
+  _CurrentLives: 0
+  _UsernameNV:
+    _length: 0
+    _data:
+      Data: 0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+  _IsInvulnerable:
+    _value: 0
 --- !u!114 &6932471598235167894
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -454,4 +468,34 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: e8d0727d5ae3244e3b569694d3912374, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Unity.Netcode.Runtime::Unity.Netcode.Components.NetworkAnimator
+  ShowTopMostFoldoutHeaderGroup: 1
+  NetworkAnimatorExpanded: 0
+  AuthorityMode: 0
   m_Animator: {fileID: 1279029867277547473}
+  TransitionStateInfoList: []
+  AnimatorParameterEntries:
+    ParameterEntries:
+    - name: state
+      NameHash: -1550593285
+      Synchronize: 1
+      ParameterType: 3
+  AnimatorParametersExpanded: 0
+--- !u!114 &8289786365401656461
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 3509522211285713741}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: -1552182283, guid: e725a070cec140c4caffb81624c8c787, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Fusion.Runtime.dll::Fusion.NetworkObject
+  SortKey: 3902519050
+  ObjectInterest: 1
+  Flags: 262145
+  NestedObjects: []
+  NetworkedBehaviours:
+  - {fileID: 789723746142480703}
+  ForceRemoteRenderTimeframe: 0

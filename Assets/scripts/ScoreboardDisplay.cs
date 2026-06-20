@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using Fusion;
 using UnityEngine;
 
 /// <summary>
@@ -20,7 +21,6 @@ public class ScoreboardDisplay : MonoBehaviour
 
     private void LateUpdate()
     {
-        // Refresh periodically to catch stat changes
         refreshTimer -= Time.deltaTime;
         if (refreshTimer <= 0f)
         {
@@ -33,9 +33,14 @@ public class ScoreboardDisplay : MonoBehaviour
     {
         if (rankText == null) return;
 
-        // Gather all active NetworkPlayers
+        // Gather all active NetworkPlayers (skip ones not yet spawned)
         players.Clear();
-        players.AddRange(FindObjectsByType<NetworkPlayer>(FindObjectsSortMode.None));
+        var allFound = FindObjectsByType<NetworkPlayer>(FindObjectsSortMode.None);
+        foreach (var p in allFound)
+        {
+            if (p.Runner == null) continue; // not yet linked to a runner
+            players.Add(p);
+        }
 
         if (players.Count == 0)
         {
@@ -44,11 +49,12 @@ public class ScoreboardDisplay : MonoBehaviour
         }
 
         // Sort by score desc, then deaths asc (tie-breaker)
+        // Fusion [Networked] properties are accessed directly (no .Value wrapper)
         players.Sort((a, b) =>
         {
-            int cmp = b.Score.Value.CompareTo(a.Score.Value);
+            int cmp = b.Score.CompareTo(a.Score);
             if (cmp == 0)
-                cmp = a.Deaths.Value.CompareTo(b.Deaths.Value);
+                cmp = a.Deaths.CompareTo(b.Deaths);
             return cmp;
         });
 
@@ -57,10 +63,10 @@ public class ScoreboardDisplay : MonoBehaviour
         for (int i = 0; i < players.Count; i++)
         {
             var p = players[i];
-            string name = p.UsernameNV.Value.ToString();
+            string name = p.UsernameNV.ToString();
             if (name.Length > 8)
                 name = name[..8];
-            lines[i] = $"{i + 1}. {name}  {p.Score.Value:D3}  {p.Deaths.Value}";
+            lines[i] = $"{i + 1}. {name}  {p.Score:D3}  {p.Deaths}";
         }
 
         rankText.SetText(string.Join("\n", lines));
