@@ -16,7 +16,6 @@ public class NetworkPlayer : NetworkBehaviour
 
     [Networked] public int CharacterIndex { get; set; }
     [Networked] public int Score { get; set; }
-    [Networked] public int Deaths { get; set; }
     [Networked] public int CurrentLives { get; set; }
     [Networked] public NetworkString<_32> UsernameNV { get; set; }
     [Networked] public NetworkBool IsInvulnerable { get; set; }
@@ -37,6 +36,14 @@ public class NetworkPlayer : NetworkBehaviour
 
             // Tell state authority (server) to store the synced character state
             SetInitialStateRpc(PlayerSession.SelectedCharacter, PlayerSession.Username);
+        }
+        else if (Object.HasStateAuthority)
+        {
+            // Server spawned this player for a remote client.
+            // Must initialize networked state immediately so the initial sync
+            // to clients has CurrentLives=3 — otherwise PlayerMove.FUN will
+            // self-disable when it sees CurrentLives <= 0 and never recover.
+            CurrentLives = 3;
         }
 
         lastScore = Score;
@@ -109,7 +116,6 @@ public class NetworkPlayer : NetworkBehaviour
         if (!Object.HasStateAuthority) return;
         if (IsInvulnerable) return;
 
-        Deaths++;
         CurrentLives--;
         IsInvulnerable = true;
 
@@ -147,14 +153,14 @@ public class NetworkPlayer : NetworkBehaviour
         // Disable player on all clients
         SetPlayerStateClientRpc(false);
 
-        yield return new WaitForSeconds(5f);
+        yield return new WaitForSeconds(3f);
 
-        // Reset position to a fixed spawn spot
-        transform.position = Vector3.zero;
+        // Reset position (same spawn as initial: above ground so gravity drops them)
+        transform.position = new Vector3(0f, 2f, 0f);
 
-        // Reset lives and re-enable
+        // Reset lives, make invulnerable briefly, and re-enable
         CurrentLives = 3;
-        IsInvulnerable = false;
+        IsInvulnerable = true;
         SetPlayerStateClientRpc(true);
     }
 

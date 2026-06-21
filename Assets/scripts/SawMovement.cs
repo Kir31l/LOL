@@ -14,11 +14,13 @@ public class SawMovement : NetworkBehaviour
 
     private Vector2 startPos;
     private float timer;
+    private Rigidbody2D rb;
 
     public override void Spawned()
     {
         startPos = transform.position;
         timer = -startDelay;
+        rb = GetComponent<Rigidbody2D>();
     }
 
     public override void FixedUpdateNetwork()
@@ -30,7 +32,16 @@ public class SawMovement : NetworkBehaviour
         if (timer < 0f) return;
 
         float offset = Mathf.Sin(timer * moveSpeed) * moveRange;
-        transform.position = startPos + Vector2.right * offset;
+        Vector2 targetPos = startPos + Vector2.right * offset;
+
+        // Use rb.MovePosition when Rigidbody2D exists so that Fusion's NetworkTransform
+        // (which reads from the Rigidbody2D when one is present) detects the change and
+        // syncs it to clients. Directly setting transform.position may not be seen by
+        // NetworkTransform when a Rigidbody2D is on the same GameObject.
+        if (rb != null)
+            rb.MovePosition(targetPos);
+        else
+            transform.position = targetPos;
     }
 
     void OnDrawGizmosSelected()

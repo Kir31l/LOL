@@ -3,7 +3,7 @@ using Fusion;
 using UnityEngine;
 
 /// <summary>
-/// Reads all NetworkPlayers, ranks them by score (desc) / deaths (asc),
+/// Reads all NetworkPlayers, ranks them by score (desc)
 /// and renders the list via BitmapText.
 /// Place on a child GameObject of the scoreboard area.
 /// </summary>
@@ -48,15 +48,9 @@ public class ScoreboardDisplay : MonoBehaviour
             return;
         }
 
-        // Sort by score desc, then deaths asc (tie-breaker)
+        // Sort by score desc
         // Fusion [Networked] properties are accessed directly (no .Value wrapper)
-        players.Sort((a, b) =>
-        {
-            int cmp = b.Score.CompareTo(a.Score);
-            if (cmp == 0)
-                cmp = a.Deaths.CompareTo(b.Deaths);
-            return cmp;
-        });
+        players.Sort((a, b) => b.Score.CompareTo(a.Score));
 
         // Build ranked text
         string[] lines = new string[players.Count];
@@ -66,7 +60,7 @@ public class ScoreboardDisplay : MonoBehaviour
             string name = p.UsernameNV.ToString();
             if (name.Length > 8)
                 name = name[..8];
-            lines[i] = $"{i + 1}. {name}  {p.Score:D3}  {p.Deaths}";
+            lines[i] = $"{i + 1}. {name}  {p.Score:D3}";
         }
 
         rankText.SetText(string.Join("\n", lines));

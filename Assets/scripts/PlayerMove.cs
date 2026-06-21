@@ -33,6 +33,11 @@ public class PlayerMove : NetworkBehaviour
     /// <summary>True while the player cannot take damage.</summary>
     public bool IsInvulnerable { get; private set; }
 
+    /// <summary>True when CurrentLives <= 0. Used INSTEAD of enabled=false to
+    /// avoid the deadlock where a disabled PlayerMove can never re-enable itself
+    /// (FUN stops being called when enabled=false).</summary>
+    private bool isDead;
+
     private LayerMask groundLayer;
     private Rigidbody2D rb;
     private CapsuleCollider2D capsule;
@@ -47,6 +52,9 @@ public class PlayerMove : NetworkBehaviour
     private int wallDirection; // -1 left, 1 right
     private float invulnerabilityTimer;
     private float knockbackTimer;
+
+    /// <summary>Synced animation state from server (used to animate proxy players on client).</summary>
+    [Networked] private int AnimState { get; set; }
 
     /// <summary>Previous tick's buttons for manual edge detection (Fusion 2.0.12 doesn't have IsDown).</summary>
     private NetworkButtons previousButtons;
@@ -79,22 +87,39 @@ public class PlayerMove : NetworkBehaviour
 
     // ─── Fusion simulation tick (runs on ALL peers) ──────────
 
+    int tickCount;
+
     public override void FixedUpdateNetwork()
     {
+        tickCount++;
+        var isLocal = Object.HasInputAuthority;
+        Debug.Log($"[PlayerMove.FUN] tick={tickCount} obj={Object.Id} local={isLocal} auth={Object.InputAuthority} runner.IsServer={Runner.IsServer}");
+
         // Poll NetworkPlayer.CurrentLives directly instead of global LivesManager.
         // This ensures each player's death/respawn is INDEPENDENT from others.
+        // NOTE: We use isDead flag instead of enabled=false because disabling the
+        // component stops FixedUpdateNetwork from being called, creating a deadlock
+        // where we can never re-enable when CurrentLives comes back.
         var netPlayer = GetComponent<NetworkPlayer>();
         if (netPlayer != null)
         {
-            if (netPlayer.CurrentLives <= 0 && enabled)
+            if (netPlayer.CurrentLives <= 0)
             {
-                if (anim != null && anim.runtimeAnimatorController != null)
-                    anim.SetInteger(StateParam, StateDisappear);
-                enabled = false;
+                if (!isDead)
+                {
+                    isDead = true;
+                    if (anim != null && anim.runtimeAnimatorController != null)
+                        anim.SetInteger(StateParam, StateDisappear);
+                }
+                // Still sync AnimState for proxy players before skipping movement
+                if (Object.HasStateAuthority)
+                    AnimState = anim != null && anim.runtimeAnimatorController != null
+                        ? anim.GetInteger(StateParam) : 0;
+                return;
             }
-            else if (netPlayer.CurrentLives > 0 && !enabled)
+            else if (isDead)
             {
-                enabled = true;
+                isDead = false;
                 IsInvulnerable = true;
                 invulnerabilityTimer = invulnerabilityDuration;
             }
@@ -104,7 +129,11 @@ public class PlayerMove : NetworkBehaviour
         // On the client: the input they just sent via OnInput.
         // On the server: the input queue from all connected clients.
         if (!GetInput<NetworkInputData>(out var input))
+        {
+            Debug.Log($"[PlayerMove.FUN] GetInput FALSE for obj={Object.Id} local={isLocal} — proxy skip");
             return;
+        }
+        Debug.Log($"[PlayerMove.FUN] GetInput TRUE move={input.HorizontalDirection} jump={input.Buttons.IsSet(MyButtons.Jump)}");
 
         // ─── Timers ────────────────────────────────────────
         if (IsInvulnerable)
@@ -176,9 +205,26 @@ public class PlayerMove : NetworkBehaviour
         {
             rb.linearVelocity = new Vector2(input.HorizontalDirection * speed, rb.linearVelocity.y);
         }
+        Debug.Log($"[PlayerMove.FUN] final vel={rb.linearVelocity} pos={transform.position} obj={Object.Id} local={isLocal}");
 
         // ─── Animation state ───────────────────────────────
         UpdateAnimation();
+        // Sync the animation state on the server so clients can render proxy players correctly
+        if (Object.HasStateAuthority)
+            AnimState = anim != null && anim.runtimeAnimatorController != null
+                ? anim.GetInteger(StateParam) : 0;
+    }
+
+    /// <summary>
+    /// Apply replicated animation state for proxy players.
+    /// For the local player the animator is already driven by FixedUpdateNetwork.
+    /// </summary>
+    public override void Render()
+    {
+        // Only apply for players we don't control locally (proxy).
+        // The server/host also skips its own player since FixedUpdateNetwork handles it.
+        if (!Object.HasInputAuthority && anim != null && anim.runtimeAnimatorController != null)
+            anim.SetInteger(StateParam, AnimState);
     }
 
     // ─── Animation ───────────────────────────────────────────
