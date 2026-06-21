@@ -1,4 +1,4 @@
-# START LANDS — Online Multiplayer Exam Prototype
+# Online Multiplayer Prototype
 
 ## Architecture
 
